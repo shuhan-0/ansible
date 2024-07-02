@@ -1,0 +1,94 @@
+- hosts: all
+  tasks:
+
+    - name: Check connectivity
+      ping:
+      register: ping_result
+
+    - name: Output remote host status
+      debug:
+        msg: "{{ inventory_hostname }} 主机已开机"
+      when: ping_result.ping is defined
+
+    - name: Output remote host status
+      debug:
+        msg: "{{ inventory_hostname }} 主机已关机"
+      when: ping_result.ping is not defined
+
+    - name: Gather CPU information
+      shell: "cat /proc/cpuinfo | grep 'model name' | head -n 1 | awk -F': ' '{print $2}'"
+      register: cpu_info
+      delegate_to: "{{ inventory_hostname }}"
+      when: ping_result.ping is defined
+
+    - name: Gather CPU utilization
+      shell: "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1 \"% \"}'"
+      register: cpu_utilization
+      delegate_to: "{{ inventory_hostname }}"
+      when: ping_result.ping is defined
+
+    - name: Gather disk usage
+      shell: "df -h --output=used,size,pcent / | awk 'NR==2 {print $1 \"/\" $2 \"/\" $3}'"
+      register: disk_usage
+      delegate_to: "{{ inventory_hostname }}"
+      when: ping_result.ping is defined
+
+    - name: Gather memory usage
+      shell: "free -m | awk 'NR==2{printf \"%dMB/%dMB /%.2f%% \", $3, $2, $3*100/$2}'"
+      register: memory_usage
+      delegate_to: "{{ inventory_hostname }}"
+      when: ping_result.ping is defined
+
+    - name: Gather network information
+      shell: |
+        ip addr show ens33 | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}'
+      register: network_info
+      delegate_to: "{{ inventory_hostname }}"
+      when: ping_result.ping is defined
+
+    - name: Save host information to local file
+      local_action:
+        module: copy
+        content: |
+          <CPU_MODEL>{{ cpu_info.stdout.strip() }}</CPU_MODEL>
+          <CPU_UTILIZATION>{{ cpu_utilization.stdout.strip() }}</CPU_UTILIZATION>
+          <DISK_USAGE>{{ disk_usage.stdout.strip() }}</DISK_USAGE>
+          <MEMORY_USAGE>{{ memory_usage.stdout.strip() }}</MEMORY_USAGE>
+          <NETWORK_INFO>{{ network_info.stdout }}</NETWORK_INFO>
+        dest: "host_info_{{ inventory_hostname }}.txt"
+      when: ping_result.ping is defined
+
+    - name: Combine host information
+      local_action:
+        module: slurp
+        src: "host_info_{{ inventory_hostname }}.txt"
+      register: host_info_files
+      when: ping_result.ping is defined
+
+    - name: Print combined host information
+      debug:
+        msg: "{{ host_info_files.content | b64decode }}"
+      when: ping_result.ping is defined
+
+    - name: Delete host_info.txt file
+      local_action:
+        module: file
+        path: host_info.txt
+        state: absent
+      when: ping_result.ping is defined
+
+    - name: Touch host_info.txt file
+      local_action:
+        module: file
+        path: host_info.txt
+        state: touch
+      when: ping_result.ping is defined
+
+    - name: Save combined host information to host_info.txt
+      local_action:
+        module: lineinfile
+        path: host_info.txt
+        line: "{{ inventory_hostname }}:\n{{ host_info_files.content | b64decode }}"
+        create: yes
+        state: present
+      when: ping_result.ping is defined
